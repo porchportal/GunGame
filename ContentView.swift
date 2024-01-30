@@ -7,8 +7,9 @@
 
 import SwiftUI
 import SpriteKit
+import AVFAudio
 import GameKit
-import Foundation
+
 
 
 struct CBitmask {
@@ -22,48 +23,63 @@ struct CBitmask {
     static let bossTwoFire: UInt32 = 0b1000000
     static let enemy_ShipTwo: UInt32 = 0b10000000
 }
-
-class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
+protocol GameViewModelUpdatable {
+    var gameOver: Bool { get set }
+    // Other state properties or methods
+}
+class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject, GameViewModelUpdatable{
+    var backgroundMusicPlayer: AVAudioPlayer?
+    var bossMusicPlayer: AVAudioPlayer?
+    let fadeDuration: TimeInterval = 1.0
     var backgroundTimer = Timer()
     var backgroundActive = false
     var player = SKSpriteNode()
     @objc var PlayerFire = SKSpriteNode()
     var enemy = SKSpriteNode()
     
-    var bossyOne = SKSpriteNode()
+    var isShooting = false
+    var fireRate = 0.3
+    var lastTouchTime = TimeInterval()
+    var tapCount = 0
+    
     var bossOneFire = SKSpriteNode()
     
-    let bulletSound = SKAction.playSoundFileNamed("blaster-2-81267", waitForCompletion: false)
     
-    @Published var gameOver = false
+    
+    @Published var gameOver: Bool = false
     
     @Published var score = 0
     var scoreLabel = SKLabelNode()
     var Live_Array = [SKSpriteNode]()
     
-
-    var isShooting = false
     
     var FireTimer = Timer()
     var enemyTimer = Timer()
     var enemyActive = false
+    
+    //BossOne
     var BossOneFireTimer = Timer()
-    var BossOneFire_Type2 = 1
+    var BossOneFire_Type = 1
     var BossOneFire_Type2_Live = 2
+    var BossOneFire_Type4_Live = 4
     var bossOneLives = 30
     var BossOneActive = false
+    var bossyOne = SKSpriteNode()
+    var SpawnCount: Double = 0
+    var statusOfBossOne: Int = 0
     
-    var enemyTwo = SKSpriteNode()
+    //BossTwo
     var BossyTwo = SKSpriteNode()
     var BossTwoFire = SKSpriteNode()
     var BossTwoFireTimer = Timer()
     var bossTwoLives = 30
     var BossTwoActive = false
 
+    var enemyTwo = SKSpriteNode()
     
     var StatusCount = 0
     var SpeedOpposite = 2.0
-    @Published var NUM = 0
+    //@Published var NUM = 0
     let bossHealthLabel = SKLabelNode(fontNamed: "Chalkduster")
     
     var bossOneHealthBar: SKSpriteNode?
@@ -89,8 +105,8 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
     }
     
     var gameArea: CGRect
+    //var viewModel: GameViewModelUpdatable
     override init(size: CGSize) {
-        
         let maxAspectRatio: CGFloat = 16.0/9.0
         let playableWidth = size.height / maxAspectRatio
         let margin = (size.width - playableWidth)/2.0
@@ -134,7 +150,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         }
         
         makePlayer(playerCh: shipChoice.integer(forKey: "playerChoice"))
-        
+        playMusic("gameMain.mp3", isBossMusic: false)
         //enemyTimer = .scheduledTimer(timeInterval: 0.6, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
         
         scoreLabel.text = "Score: \(score)"
@@ -291,10 +307,62 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         backgroundObject.run(Sequence)
         self.addChild(backgroundObject)
     }
+    // Music
+    func playMusic(_ filename: String, isBossMusic: Bool) {
+        // Fade out current music
+        if let currentPlayer = isBossMusic ? backgroundMusicPlayer : bossMusicPlayer, currentPlayer.isPlaying {
+            fadeOutMusic(player: currentPlayer)
+        }
+        
+        // Load and play new music
+        DispatchQueue.main.asyncAfter(deadline: .now() + fadeDuration) {
+            let resourceUrl = Bundle.main.url(forResource: filename, withExtension: nil)
+            guard let url = resourceUrl else {
+                print("Could not find file: \(filename)")
+                return
+            }
+            
+            do {
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.volume = 0 // Start with volume at 0 for fade in
+                if isBossMusic {
+                    self.bossMusicPlayer = player
+                } else {
+                    self.backgroundMusicPlayer = player
+                    self.backgroundMusicPlayer?.numberOfLoops = -1 // Loop infinitely for background music
+                }
+                player.play()
+                self.fadeInMusic(player: player)
+            } catch {
+                print("Could not create audio player: \(error)")
+            }
+        }
+    }
+    func fadeOutMusic(player: AVAudioPlayer) {
+        // Reduce volume to 0 over the fade duration
+        if player.volume > 0.1 {
+            UIView.animate(withDuration: fadeDuration, animations: {
+                player.volume = 0
+            }) { completed in
+                if completed {
+                    player.stop()
+                }
+            }
+        } else {
+            player.stop()
+        }
+    }
+    func fadeInMusic(player: AVAudioPlayer) {
+        // Increase volume to 1 over the fade duration
+        UIView.animate(withDuration: fadeDuration) {
+            player.volume = 1
+        }
+    }
     func pauseGame() {
         self.isPaused = true
         isGamePaused = true
-        // Invalidate timers
+        backgroundMusicPlayer?.stop()
+        bossMusicPlayer?.stop()
         if enemyActive{
             enemyTimer.invalidate()
         }
@@ -389,7 +457,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             handleCollisionPlayerFireWithBossTwo(fireNode, bossTwoNode)
             //handleCollisionPlayerFireWithBossTwo(contactA.node, contactB.node)
         }
-        // Player hitting BossOne's fire
+        // Player ship hitting BossOne's fire
         if (contactA.categoryBitMask == CBitmask.player_Ship && contactB.categoryBitMask == CBitmask.bossOneFire) ||
            (contactB.categoryBitMask == CBitmask.player_Ship && contactA.categoryBitMask == CBitmask.bossOneFire) {
             handleCollisionPlayerWithBossOneFire(contactA.node, contactB.node)
@@ -448,6 +516,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             //print(live5)
             live5.removeFromParent()
             player.removeFromParent()
+            particleEffect()
             BossOneFireTimer.invalidate()
             BossTwoFireTimer.invalidate()
             enemyTimer.invalidate()
@@ -487,6 +556,27 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         let delete = SKAction.removeFromParent()
         explo?.run(SKAction.sequence([scaleIn,FadeOut,delete]))
     }
+    func addFireThunderEffect(to node: SKNode, yPosition: CGFloat) {
+        if let fireThunderPath = Bundle.main.path(forResource: "Thunder", ofType: "sks"),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: fireThunderPath)) {
+            
+            do {
+                let fireThruster = try NSKeyedUnarchiver.unarchivedObject(ofClass: SKEmitterNode.self, from: data) as SKEmitterNode?
+                fireThruster?.xScale = 0.5
+                fireThruster?.yScale = 0.5
+                fireThruster?.particleRotation = .pi
+                let fireThrusterEffectNode = SKEffectNode()
+                if let fireThruster = fireThruster {
+                    fireThrusterEffectNode.addChild(fireThruster)
+                }
+                fireThrusterEffectNode.zPosition = 4
+                fireThrusterEffectNode.position.y = yPosition
+                node.addChild(fireThrusterEffectNode)
+            } catch {
+                print("Error unarchiving file: \(error)")
+            }
+        }
+    }
     // Playership hitting the enemy ship
     func handleCollisionPlayerShipHitWithEnemy(_ playership: SKNode?, _ enemyNode: SKNode?){
         guard enemyNode?.name == "enemy" else { return }
@@ -507,14 +597,14 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         fireNode?.removeFromParent()
         enemyTwoNode?.removeFromParent()
         SpawnExplosion(spawnPosition: enemyTwoNode?.position ?? CGPoint.zero)
-        UpdateScore()
+        UpdateScore(1)
     }
     func handleCollisionPlayerFireWithEnemy(_ fireNode: SKNode?, _ enemyNode: SKNode?) {
         guard enemyNode?.name == "enemy" else { return }
         fireNode?.removeFromParent()
         enemyNode?.removeFromParent()
         SpawnExplosion(spawnPosition: enemyNode?.position ?? CGPoint.zero)
-        UpdateScore()
+        UpdateScore(1)
         
     }
     func handleCollisionPlayerFireWithBossOne(_ fireNode: SKNode?, _ bossOneNode: SKNode?) {
@@ -525,7 +615,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             bossOneNode?.removeFromParent()
             bossOneHealthBar?.removeFromParent()
             SpawnExplosion(spawnPosition: bossOneNode?.position ?? CGPoint.zero)
-            enemyTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
+            //enemyTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
             enemyActive = true
             BossOneFireTimer.invalidate()
             bossHealthLabel.isHidden = true
@@ -533,17 +623,27 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             StatusCount += 20
             //SpeedOpposite -= 0.25
             bossOneLives = 30 + StatusCount
-            UpdateScore()
+            UpdateScore(10)
             updateHealthBar()
             BossOneActive = false
             SpeedOpposite = 2.0
             startNewLevel()
+            //statusOfBossOne = 0
+            playMusic("gameMain.mp3", isBossMusic: false)
+            
+            if statusOfBossOne >= 2 {
+                let list2 = [1 , 2]
+                statusOfBossOne = list2[Int.random(in: 0..<list2.count)]
+            } else {
+                statusOfBossOne += 1
+            }
+            
         } else if (bossOneLives <= (10 + StatusCount)) && (bossOneLives > 0) {
             SpawnExplosion(spawnPosition: bossOneNode?.position ?? CGPoint.zero)
             fireNode?.removeFromParent()
             bossOneLives -= 1
             updateHealthBar()
-            SpeedOpposite -= 0.25
+            SpeedOpposite -= 0.5
         } else {
             SpawnExplosion(spawnPosition: bossOneNode?.position ?? CGPoint.zero)
             fireNode?.removeFromParent()
@@ -556,22 +656,61 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
     }
     //***** BossOneFire The bullet number 2
     func handleCollisionPlayerFireWithBossOnefire(_ fireNode: SKNode?, _ bossOnefireNode: SKNode?) {
-        bossOnefireNode?.removeFromParent()
-        fireNode?.removeFromParent()
-        if BossOneFire_Type2 == 2 {
-            print("bullet active")
+        //bossOnefireNode?.removeFromParent()
+        //fireNode?.removeFromParent()
+        switch BossOneFire_Type{
+        case 2:
+            print("bullet active 2")
             fireNode?.removeFromParent()
             BossOneFire_Type2_Live -= 1
+            SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
             if BossOneFire_Type2_Live < 0 {
                 bossOnefireNode?.removeFromParent()
-                SpawnExplosion(spawnPosition: fireNode?.position ??  CGPoint.zero)
+                SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+                BossOneFire_Type2_Live = 2
+            }
+        case 4:
+            print("bullet active 4")
+            fireNode?.removeFromParent()
+            BossOneFire_Type4_Live -= 1
+            SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+            if BossOneFire_Type4_Live < 0 {
+                bossOnefireNode?.removeFromParent()
+                SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+                BossOneFire_Type4_Live = 4
+            }
+        default:
+            bossOnefireNode?.removeFromParent()
+            fireNode?.removeFromParent()
+            SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+        }
+        /*
+        if BossOneFire_Type == 2 {
+            print("bullet active 2")
+            fireNode?.removeFromParent()
+            BossOneFire_Type2_Live -= 1
+            SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+            if BossOneFire_Type2_Live < 0 {
+                bossOnefireNode?.removeFromParent()
+                SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+                BossOneFire_Type2_Live = 2
+            }
+        } else if BossOneFire_Type == 4 {
+            print("bullet active 4")
+            fireNode?.removeFromParent()
+            BossOneFire_Type4_Live -= 1
+            SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+            if BossOneFire_Type4_Live < 0 {
+                bossOnefireNode?.removeFromParent()
+                SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
+                BossOneFire_Type4_Live = 4
             }
         } else {
             bossOnefireNode?.removeFromParent()
             fireNode?.removeFromParent()
             SpawnExplosionBullet(spawnPosition: bossOnefireNode?.position ??  CGPoint.zero)
-            SpawnExplosion(spawnPosition: fireNode?.position ??  CGPoint.zero)
-        }
+            //SpawnExplosion(spawnPosition: fireNode?.position ??  CGPoint.zero)
+        }*/
     }
     func handleCollisionPlayerFireWithBossTwo(_ fireNode: SKNode?, _ bossTwoNode: SKNode?) {
 
@@ -580,7 +719,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             bossTwoHealthBar?.removeFromParent()
 
             SpawnExplosion(spawnPosition: bossTwoNode?.position ?? CGPoint.zero)
-            enemyTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
+            //enemyTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
             enemyActive = true
             BossTwoFireTimer.invalidate()
             bossHealthLabel.isHidden = true
@@ -588,11 +727,11 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             StatusCount += 10
             SpeedOpposite -= 0.25
             bossTwoLives = 30 + StatusCount
-            UpdateScore()
+            UpdateScore(10)
             updateHealthBar()
             BossTwoActive = false
             SpeedOpposite = 1.0
-            
+            startNewLevel()
         } else {
             SpawnExplosion(spawnPosition: bossTwoNode?.position ?? CGPoint.zero)
             fireNode?.removeFromParent()
@@ -615,8 +754,45 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
     }
     func handleCollisionPlayerWithBossOneFire(_ playerNode: SKNode?, _ bossOneFireNode: SKNode?) {
         guard bossOneFireNode?.name == "bossOneFire" else { return }
-        bossOneFireNode?.removeFromParent()
-        LivesPlayer()
+        
+        switch BossOneFire_Type{
+        case 2:
+            bossOneFireNode?.removeFromParent()
+            if Live_Array.count < 2 {
+                LivesPlayer()
+            } else {
+                LivesPlayer()
+                LivesPlayer()
+            }
+        case 4:
+            bossOneFireNode?.removeFromParent()
+            BossOneFire_Type4_Live -= 1
+            for _ in 1...(4 - min(Live_Array.count, 3)) {
+                LivesPlayer()
+            }
+        default:
+            bossOneFireNode?.removeFromParent()
+            LivesPlayer()
+        }/*
+        if BossOneFire_Type == 2 {
+            bossOneFireNode?.removeFromParent()
+            if Live_Array.count < 2 {
+                LivesPlayer()
+            } else {
+                LivesPlayer()
+                LivesPlayer()
+            }
+
+        } else if BossOneFire_Type == 4 {
+            bossOneFireNode?.removeFromParent()
+            BossOneFire_Type4_Live -= 1
+            for _ in 1...(4 - min(Live_Array.count, 3)) {
+                LivesPlayer()
+            }
+        } else {
+            bossOneFireNode?.removeFromParent()
+            LivesPlayer()
+        }*/
     }
     func handleCollisionPlayerWithBossTwoFire(_ playerNode: SKNode?, _ bossTwoFireNode: SKNode?) {
         guard bossTwoFireNode?.name == "BossTwoFire" else{ return }
@@ -677,15 +853,10 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         player.physicsBody?.collisionBitMask = CBitmask.None
         addChild(player)
     }
-    /*
-    func updateBossOneImage(with image:UIImage){
-        let texture = SKTexture(image: image)
-        bossyOne.texture = texture
-        print("it working")
-    }*/
     func makeBossOne(){
+        
         BossOneActive = true
-        startNewLevel()
+        //startNewLevel()
         bossyOne = .init(imageNamed: "Boss")
         //bossyOne = SKSpriteNode(imageNamed: "Boss")
         bossyOne.position = CGPoint(x: size.width / 2, y: size.height + bossyOne.size.height)
@@ -696,7 +867,9 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         bossyOne.alpha = 1
         bossyOne.size = CGSize(width: 300, height: 300)
         bossyOne.zRotation = .pi
-        bossyOne.physicsBody = SKPhysicsBody(rectangleOf: bossyOne.size)
+        let sizeReduced = CGSize(width: bossyOne.size.width/2, height: bossyOne.size.height/2)
+        
+        bossyOne.physicsBody = SKPhysicsBody(rectangleOf: sizeReduced)
         bossyOne.physicsBody?.affectedByGravity = false
         bossyOne.physicsBody?.categoryBitMask = CBitmask.bossOne
         bossyOne.physicsBody?.contactTestBitMask = CBitmask.player_Ship | CBitmask.player_Fire
@@ -713,7 +886,6 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         let move8 = SKAction.moveTo(y: size.height / 1.2, duration: 1)
         let action = SKAction.repeat(SKAction.sequence([move5, move6]), count: 0)
         
-        //let (actionForBossOne, _) = FireFunc()
         let repearForever = SKAction.repeatForever (SKAction.sequence([move2,move3,move4,action,move7,move8,move3,move4,action,move7,move8]))
         let sequence = SKAction.sequence([move1,repearForever])
          bossyOne.run(sequence)
@@ -734,10 +906,11 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
     }
     @objc func bossOneFireFunc(){
         
+        updateGameState()
         let randomAngle = CGFloat.random(in: 150...210) * (CGFloat.pi / 180)
         //let randomAngle = CGFloat.random(in: -45...45) * (CGFloat.pi / 180)
         bossOneFire = .init(imageNamed: "buttel.001")
-        bossOneFire.size = CGSize(width: 100, height: 100)
+        bossOneFire.size = CGSize(width: 80, height: 80)
         bossOneFire.position = bossyOne.position
         bossOneFire.name = "bossOneFire"
         //bossOneFire.zRotation = .pi + bossyOne.zRotation
@@ -748,43 +921,27 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         bossOneFire.physicsBody?.categoryBitMask = CBitmask.bossOneFire
         bossOneFire.physicsBody?.contactTestBitMask = CBitmask.player_Ship | CBitmask.player_Fire
         bossOneFire.physicsBody?.collisionBitMask = CBitmask.player_Ship
-        //let rotationAction = SKAction.rotate(toAngle: randomAngle + bossOneFire.zRotation, duration: 0.5)
-        //bossyOne.run(rotationAction)
-        bossyOne.zRotation = randomAngle
+        let rotationAction = SKAction.rotate(toAngle: randomAngle, duration: 0.5)
+        bossyOne.run(rotationAction)
+        //bossyOne.zRotation = randomAngle
         bossOneFire.zRotation = bossyOne.zRotation
+        
+        addFireThunderEffect(to: bossOneFire, yPosition: -40)
+        
         let fireRotationAction = SKAction.rotate(toAngle: randomAngle, duration: 0.2)
         let bulletSpeed: CGFloat = 4000
         let moveAction = SKAction.run {
             let dx = bulletSpeed * cos(randomAngle + .pi / 2)
             let dy = bulletSpeed * sin(randomAngle + .pi / 2)
             let move1 = SKAction.moveTo(y: self.size.height/1.1, duration: 2)
-            let move2 = SKAction.moveTo(x: CGFloat.random(in: self.size.width/2.5...self.size.width/1.5), duration: 1.5)
-            let rotationS = SKAction.rotate(byAngle: .pi*4, duration: 1)
+            let move2 = SKAction.moveTo(x: CGFloat.random(in: self.size.width/2.5...self.size.width/1.5), duration: 2)
+            let rotationS = SKAction.rotate(byAngle: .pi*4, duration: 2)
             let groupS = SKAction.group([move1, move2, rotationS])
-            let activateThruster = SKAction.run {
-                if let fireThunderPath = Bundle.main.path(forResource: "Thunder", ofType: "sks"),
-                   let data = try? Data(contentsOf: URL(fileURLWithPath: fireThunderPath)) {
-                    do {
-                        let fireThruster = try NSKeyedUnarchiver.unarchivedObject(ofClass: SKEmitterNode.self, from: data) as SKEmitterNode?
-                        fireThruster?.xScale = 0.4
-                        fireThruster?.yScale = 0.4
-                        fireThruster?.particleRotation = .pi
-                        let fireThrusterEffectNode = SKEffectNode()
-                        if let fireThruster = fireThruster {
-                            fireThrusterEffectNode.addChild(fireThruster)
-                        }
-                        fireThrusterEffectNode.zPosition = 4
-                        fireThrusterEffectNode.position.y = -20
-                        self.bossOneFire.addChild(fireThrusterEffectNode)
-                    } catch {
-                        print("Error unarchiving file: \(error)")
-                    }
-                }
-            }
+            
             let wait = SKAction.wait(forDuration: 0.2)
             let moveByAction = SKAction.moveBy(x: dx, y: dy, duration: 2)
             let removeAction = SKAction.removeFromParent()
-            let sequence = SKAction.sequence([groupS, activateThruster, wait,  moveByAction, removeAction])
+            let sequence = SKAction.sequence([groupS, wait,  moveByAction, removeAction])
             self.bossOneFire.run(sequence)
         }
 
@@ -842,6 +999,8 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         BossTwoFire.physicsBody?.categoryBitMask = CBitmask.bossTwoFire
         BossTwoFire.physicsBody?.contactTestBitMask = CBitmask.player_Ship
         BossTwoFire.physicsBody?.collisionBitMask = CBitmask.player_Ship
+        
+        addFireThunderEffect(to: BossTwoFire, yPosition: -40)
         let bulletSpeed: CGFloat = 1400
         let Dx = bulletSpeed * cos(BossTwoFire.zRotation + .pi/2)
         let Dy = bulletSpeed * sin(BossTwoFire.zRotation + .pi/2)
@@ -869,10 +1028,16 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         enemy.physicsBody?.collisionBitMask = CBitmask.player_Ship | CBitmask.player_Fire
         addChild(enemy)
         
+        let explo = SKEmitterNode(fileNamed: "Testing ")
+        explo?.position = enemy.position
+        explo?.zPosition = 3
+        explo?.setScale(3)
+        self.addChild(explo!)
+        
         let moveAction = SKAction.moveTo(y: -100, duration: 5)
+        //let combine = SKAction.group([ex])
         let deleteAction = SKAction.removeFromParent()
         let combine = SKAction.sequence([moveAction,deleteAction])
-        
         enemy.run(combine)
     }
     func spawnEnemy(){
@@ -894,26 +1059,9 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         enemyTwo.physicsBody?.collisionBitMask = CBitmask.player_Ship | CBitmask.player_Fire
         self.addChild(enemyTwo)
         
-        if let fireThunderPath = Bundle.main.path(forResource: "Thunder", ofType: "sks"),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: fireThunderPath)) {
-            
-            do {
-                let fireThruster = try NSKeyedUnarchiver.unarchivedObject(ofClass: SKEmitterNode.self, from: data) as SKEmitterNode?
-                fireThruster?.xScale = 0.5
-                fireThruster?.yScale = 0.5
-                fireThruster?.particleRotation = .pi
-                let fireThrusterEffectNode = SKEffectNode()
-                if let fireThruster = fireThruster {
-                    fireThrusterEffectNode.addChild(fireThruster)
-                }
-                fireThrusterEffectNode.zPosition = 4
-                fireThrusterEffectNode.position.y = -40
-                enemyTwo.addChild(fireThrusterEffectNode)
-            } catch {
-                print("Error unarchiving file: \(error)")
-            }
-        }
-        let move = SKAction.move(to: endPoint, duration: 1.5)
+        addFireThunderEffect(to: enemyTwo, yPosition: -40)
+        
+        let move = SKAction.move(to: endPoint, duration: 2)
         let delete = SKAction.removeFromParent()
         let Sequence = SKAction.sequence([move, delete])
         let dx = endPoint.x - startPoint.x
@@ -931,11 +1079,38 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         let healthRatio2 = CGFloat(bossTwoLives) / 30.0
         bossTwoHealthBar?.size.width = 200 * healthRatio2
     }
-    func UpdateScore(){
-        score += 1
+    func UpdateScore(_  Num: Int){
+        score += Num
         scoreLabel.text = "Score: \(score)"
         
-        if score == 10 || score == 35 || score == 55 {
+        let bossOneSpawnProbability = 0.4
+        let bossTwoSpawnProbability = 0.4
+        let EnemyProbability = 0.1
+        
+        let randomValue = Double.random(in: 0...1)
+
+        if !BossOneActive && !BossTwoActive {
+            
+            if score >= 5 && randomValue < bossOneSpawnProbability {
+                if SpawnCount >= 0.4 {
+                    SpawnCount = 0.4
+                } else {
+                    SpawnCount += 0.05
+                }
+                //SpawnCount += 0.05
+                spawnBossOne()
+                playMusic("evil-boss.mp3", isBossMusic: true)
+            } else if score >= 10 && randomValue < (bossTwoSpawnProbability + SpawnCount) {
+                spawnBossTwo()
+                playMusic("evil-boss.mp3", isBossMusic: true)
+            }
+        }
+        if score >= 20 && randomValue < EnemyProbability{
+            enemyTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(makeEnemys), userInfo: nil, repeats: true)
+        }
+        //BossOne
+        /*
+        if score == 10 || score == 15 || score == 25 || score == 35 || score == 45 {
             makeBossOne()
             enemyTimer.invalidate()
             BossOneFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossOneFireFunc), userInfo: nil, repeats: true)
@@ -944,28 +1119,99 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
             self.removeAction(forKey: "spawningEnemies")
             bossHealthLabel.isHidden = false
             bossOneHealthBar?.isHidden = false
-        } else if score == 25 {
-            startNewLevel()
         }
-        
-        else if score == 20 || score == 40 || score == 65{
+        else if score == 200 || score == 400 || score == 650{
             makeBossTwo()
             enemyTimer.invalidate()
             BossTwoFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossTwoFireFunc), userInfo: nil, repeats: true)
             //StatusCount += 1
+            self.removeAction(forKey: "spawningEnemies")
             bossHealthLabel.isHidden = false
             bossTwoHealthBar?.isHidden = false
         }
-        else if score == 30 || score == 45 || score == 75{
+        else if score == 300 || score == 450 || score == 750{
             makeBossOne()
             makeBossTwo()
             enemyTimer.invalidate()
+            self.removeAction(forKey: "spawningEnemies")
             BossOneFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossOneFireFunc), userInfo: nil, repeats: true)
             BossTwoFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossTwoFireFunc), userInfo: nil, repeats: true)
             //StatusCount += 1
             bossHealthLabel.isHidden = false
             bossOneHealthBar?.isHidden = false
             bossTwoHealthBar?.isHidden = false
+        }*/
+    }
+    func spawnBossOne() {
+        makeBossOne()
+        enemyTimer.invalidate()
+        BossOneFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossOneFireFunc), userInfo: nil, repeats: true)
+        BossOneActive = true
+        self.removeAction(forKey: "spawningEnemies")
+        bossHealthLabel.isHidden = false
+        bossOneHealthBar?.isHidden = false
+    }
+    func spawnBossTwo() {
+        makeBossTwo()
+        enemyTimer.invalidate()
+        BossTwoFireTimer = Timer.scheduledTimer(timeInterval: SpeedOpposite, target: self, selector: #selector(bossTwoFireFunc), userInfo: nil, repeats: true)
+        BossTwoActive = true
+        self.removeAction(forKey: "spawningEnemies")
+        bossHealthLabel.isHidden = false
+        bossTwoHealthBar?.isHidden = false
+    }
+    
+    func updateGameState(){/*
+        if statusOfBossOne == 1{
+            bossOneFire.texture = SKTexture(imageNamed: "Number2.001")
+            bossyOne.removeChildren(in: [bossyOne.childNode(withName: "TheNumber")].compactMap { $0 })
+            activateTheNumberSpecial(imageName: "Number2.001")
+            BossOneFire_Type = 2
+            print("statusOfBossOne == 1")
+            //bulletDamage = 20
+            //Damage.text = "Damage \(bulletDamage)"
+        }
+        else if statusOfBossOne == 2{
+            bossOneFire.texture = SKTexture(imageNamed: "Number4.001")
+            bossyOne.removeChildren(in: [bossyOne.childNode(withName: "TheNumber")].compactMap { $0 })
+            activateTheNumberSpecial(imageName: "Number4.001")
+            BossOneFire_Type = 4
+            //bulletDamage = 30
+        } else {
+            BossOneFire_Type = 1
+            bossOneFire.texture = SKTexture(imageNamed: "buttel.001")
+            bossyOne.childNode(withName: "TheNumber")?.removeFromParent()
+            //bulletDamage = 1
+            //Damage.text = "Damage \(bulletDamage)"
+        }*/
+        switch statusOfBossOne {
+        case 1:
+            bossOneFire.texture = SKTexture(imageNamed: "Number2.001")
+            bossyOne.removeChildren(in: [bossyOne.childNode(withName: "TheNumber")].compactMap { $0 })
+            activateTheNumberSpecial(imageName: "Number2.001")
+            BossOneFire_Type = 2
+        case 2:
+            bossOneFire.texture = SKTexture(imageNamed: "Number4.001")
+            bossyOne.removeChildren(in: [bossyOne.childNode(withName: "TheNumber")].compactMap { $0 })
+            activateTheNumberSpecial(imageName: "Number4.001")
+            BossOneFire_Type = 4
+        default:
+            BossOneFire_Type = 1
+            bossOneFire.texture = SKTexture(imageNamed: "buttel.001")
+            bossyOne.childNode(withName: "TheNumber")?.removeFromParent()
+        }
+    }
+    func activateTheNumberSpecial(imageName: String) {
+        if bossyOne.childNode(withName: "TheNumber") == nil {
+            //let TheNumber = SKSpriteNode(imageNamed: "Number2.001")
+            let TheNumber = SKSpriteNode(imageNamed: imageName)
+            TheNumber.name = "TheNumber"
+            TheNumber.size = CGSize(width: 100, height: 100)
+            TheNumber.zPosition = 6
+            TheNumber.position = CGPoint(x: 6, y: bossyOne.size.height / 3 + TheNumber.size.height / 8)
+            TheNumber.zRotation = .pi
+            bossyOne.addChild(TheNumber)
+            print("Image: \(imageName)")
         }
     }
     func startShooting(){
@@ -974,7 +1220,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         run(SKAction.repeatForever(
             SKAction.sequence([SKAction.run {
                 [weak self] in self?.fireBullet()
-            }, SKAction.wait(forDuration: 0.3)])), withKey: "shooting")
+            }, SKAction.wait(forDuration: self.fireRate)])), withKey: "shooting")
     }
     func stopShooting(){
         isShooting = false
@@ -996,8 +1242,13 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         
         let moveAction = SKAction.moveTo(y: 1400, duration: 1)
         let deleteAction = SKAction.removeFromParent()
-        bullet.run(SKAction.sequence([bulletSound,moveAction, deleteAction]))
         
+        let bulletSound = SKAction.playSoundFileNamed("blaster-2-81267.mp3", waitForCompletion: false)
+        let volume = SKAction.changeVolume(by: 0.03, duration: 0.1)
+        let groupSound = SKAction.group([bulletSound, volume])
+        bullet.run(groupSound)
+        //bullet.run(SKAction.sequence([bulletSound,moveAction, deleteAction]))
+        bullet.run(SKAction.sequence([moveAction, deleteAction]))
         self.addChild(bullet)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?){
@@ -1027,10 +1278,33 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         }
     }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        
+        let now = Date().timeIntervalSince1970
+        if now - lastTouchTime < 0.3 { // Threshold for rapid tapping
+            tapCount += 1
+        } else {
+            tapCount = 1
+        }
+        // If rapid taps exceed a certain number, consider it as spam
+        if tapCount >= 3 { // Threshold for considering as spam
+            fireRate = max(fireRate - 0.1, 0.05) // Increase fire rate
+        } else {
+            fireRate = 0.3 // Reset to default fire rate
+        }
+
+        lastTouchTime = now
+        
         if currentGameState == gameState.preGame {
             startGame()
             //spawnEnemy()
-        } else if currentGameState == gameState.inGame{
+        } //else if currentGameState == gameState.inGame{
+            //startShooting()
+            //spawnEnemy()
+        //}
+        else if currentGameState == gameState.inGame{
+            tapCount = 0
+            fireRate = 0.3
+            
             startShooting()
             //spawnEnemy()
         }
@@ -1040,7 +1314,7 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
     }
     func resetGame(){
         //score = 0
-        SpeedOpposite = 1.0
+        SpeedOpposite = 2.0
         bossOneLives = 30
         bossTwoLives = 30
         scoreLabel.text = "Score: \(score)"
@@ -1073,6 +1347,8 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         updateHighScore(with: score)
         backgroundTimer.invalidate()
         resetGame()
+        backgroundMusicPlayer?.stop()
+        bossMusicPlayer?.stop()
         gameOver = true
         
         self.removeAllActions()
@@ -1082,23 +1358,24 @@ class Game_Scene: SKScene, SKPhysicsContactDelegate, ObservableObject{
         self.enumerateChildNodes(withName: "Bullet"){enemy, stop in
             enemy.removeAllActions()
         }
-        
-        let changeSceneAction = SKAction.run(changeScene)
-        let waitToChangeScene = SKAction.wait(forDuration: 1)
-        let changeSceneSequence = SKAction.sequence([waitToChangeScene,changeSceneAction])
-        self.run(changeSceneSequence)
         /*
         let gameOverScene = ScoreBoardScene()
         gameOverScene.scaleMode = .aspectFill
         self.view?.presentScene(gameOverScene)*/
+        let changeSceneAction = SKAction.run(changeScene)
+        let waitToChangeScene = SKAction.wait(forDuration: 1)
+        let changeSceneSequence = SKAction.sequence([waitToChangeScene,changeSceneAction])
+        self.run(changeSceneSequence)
     }
 }
 
 struct ContentView: View {
-    @ObservedObject var scene = Game_Scene(size: .zero)
+    //@ObservedObject var scene = Game_Scene(size: CGSize(width: 750, height: 1335))
+    @ObservedObject var scene : Game_Scene
     @Binding var status : Int
     @Binding var ContentActive : Bool
     @State private var showingSettings = false
+    //@StateObject var viewModel = GameViewModel()
     //@State private var shouldShowScoreboard = false
     var body: some View {
         HStack{
@@ -1119,9 +1396,10 @@ struct ContentView: View {
                 if shouldShowScoreboard {
                     EndingScene1()
                 }*/
-            }/*
+            }
             .onChange(of: scene.gameOver){
-                scene.NUM += 1
+                //scene.NUM += 1
+                /*
                 if scene.gameOver {
                     if scene.score >= 50 {
                         scene.gameOver = false
@@ -1132,8 +1410,8 @@ struct ContentView: View {
                     }
                     scene.gameOver = false
                     //shouldShowScoreboard = true
-                }
-            }*/
+                }*/
+            }
         }
     }
     private var pauseBotton: some View{
@@ -1145,6 +1423,7 @@ struct ContentView: View {
                 .background(Color.clear)
         }
         .accessibilityLabel(scene.isPaused ? "Resume Game" : "Pause Game")
+        
     }
     private func togglePause(){
         if scene.isPaused {
@@ -1157,5 +1436,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(scene: Game_Scene(size: CGSize(width: 750, height: 1335)), status: .constant(0), ContentActive: .constant(false))
+    ContentView(scene: Game_Scene(size: CGSize(width: 750, height: 1335)),status: .constant(0), ContentActive: .constant(false))
 }
